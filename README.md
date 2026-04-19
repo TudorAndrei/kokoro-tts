@@ -135,17 +135,18 @@ python -m kokoro_tts --help
 
 ### Download Model Files
 
-After installation, download the required model files to your working directory:
+After installation, run the built-in downloader. It places the model and voices file in the XDG data directory (`$XDG_DATA_HOME/kokoro-tts`, falling back to `~/.local/share/kokoro-tts` on Linux and macOS):
 
 ```bash
-# Download voice data (bin format is preferred)
-wget https://github.com/nazdridoy/kokoro-tts/releases/download/v1.0.0/voices-v1.0.bin
-
-# Download the model
-wget https://github.com/nazdridoy/kokoro-tts/releases/download/v1.0.0/kokoro-v1.0.onnx
+kokoro-tts download
 ```
 
-> The script requires `voices-v1.0.bin` and `kokoro-v1.0.onnx` to be present in the same directory where you run the `kokoro-tts` command.
+This fetches:
+
+- `kokoro-v1.0.onnx` — https://github.com/nazdridoy/kokoro-tts/releases/download/v1.0.0/kokoro-v1.0.onnx
+- `voices-v1.0.bin`  — https://github.com/nazdridoy/kokoro-tts/releases/download/v1.0.0/voices-v1.0.bin
+
+The CLI loads these files from the XDG data directory automatically; if they are missing it exits with an error pointing you at `kokoro-tts download`. You can still override the paths per-invocation with `--model` and `--voices`.
 
 ## Supported voices:
 
@@ -174,6 +175,7 @@ kokoro-tts <input_text_file> [<output_audio_file>] [options]
 
 ### Commands
 
+- `download`: Download model files to the XDG data directory
 - `-h, --help`: Show help message
 - `--help-languages`: List supported languages
 - `--help-voices`: List available voices

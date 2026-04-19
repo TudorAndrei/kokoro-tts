@@ -12,6 +12,69 @@ import warnings
 from threading import Event
 import re
 import importlib.metadata
+import urllib.request
+import urllib.error
+from pathlib import Path
+
+MODEL_FILENAME = "kokoro-v1.0.onnx"
+VOICES_FILENAME = "voices-v1.0.bin"
+MODEL_URL = f"https://github.com/nazdridoy/kokoro-tts/releases/download/v1.0.0/{MODEL_FILENAME}"
+VOICES_URL = f"https://github.com/nazdridoy/kokoro-tts/releases/download/v1.0.0/{VOICES_FILENAME}"
+
+
+def get_data_dir() -> Path:
+    """Return the XDG data directory for kokoro-tts ($XDG_DATA_HOME/kokoro-tts or ~/.local/share/kokoro-tts)."""
+    xdg_data_home = os.environ.get("XDG_DATA_HOME")
+    base = Path(xdg_data_home) if xdg_data_home else Path.home() / ".local" / "share"
+    return base / "kokoro-tts"
+
+
+def default_model_path() -> str:
+    return str(get_data_dir() / MODEL_FILENAME)
+
+
+def default_voices_path() -> str:
+    return str(get_data_dir() / VOICES_FILENAME)
+
+
+def download_models() -> None:
+    """Download the model and voices files to the XDG data directory."""
+    data_dir = get_data_dir()
+    data_dir.mkdir(parents=True, exist_ok=True)
+
+    targets = [
+        (MODEL_URL, data_dir / MODEL_FILENAME),
+        (VOICES_URL, data_dir / VOICES_FILENAME),
+    ]
+
+    for url, dest in targets:
+        if dest.exists():
+            print(f"Already present: {dest}")
+            continue
+
+        print(f"Downloading {url}")
+        print(f"  -> {dest}")
+
+        def _progress(block, block_size, total):
+            if total <= 0:
+                return
+            done = min(block * block_size, total)
+            pct = done * 100 / total
+            sys.stdout.write(f"\r  {pct:5.1f}%  ({done / 1e6:6.1f} / {total / 1e6:6.1f} MB)")
+            sys.stdout.flush()
+
+        tmp = dest.with_suffix(dest.suffix + ".part")
+        try:
+            urllib.request.urlretrieve(url, tmp, _progress)
+            tmp.replace(dest)
+            sys.stdout.write("\n")
+        except (urllib.error.URLError, OSError) as e:
+            if tmp.exists():
+                tmp.unlink()
+            print(f"\nError downloading {url}: {e}")
+            sys.exit(1)
+
+    print(f"\nModels installed in {data_dir}")
 
 # Third-party imports
 import numpy as np
@@ -30,27 +93,19 @@ warnings.filterwarnings("ignore", category=FutureWarning, module='ebooklib')
 stop_spinner = False
 stop_audio = False
 
-def check_required_files(model_path="kokoro-v1.0.onnx", voices_path="voices-v1.0.bin"):
+def check_required_files(model_path=None, voices_path=None):
     """Check if required model files exist and provide helpful error messages."""
-    required_files = {
-        model_path: "https://github.com/nazdridoy/kokoro-tts/releases/download/v1.0.0/kokoro-v1.0.onnx",
-        voices_path: "https://github.com/nazdridoy/kokoro-tts/releases/download/v1.0.0/voices-v1.0.bin"
-    }
-    
-    missing_files = []
-    for filepath, download_url in required_files.items():
-        if not os.path.exists(filepath):
-            missing_files.append((filepath, download_url))
-    
-    if missing_files:
+    model_path = model_path or default_model_path()
+    voices_path = voices_path or default_voices_path()
+
+    missing = [p for p in (model_path, voices_path) if not os.path.exists(p)]
+    if missing:
         print("Error: Required model files are missing:")
-        for filepath, download_url in missing_files:
-            print(f"  • {filepath}")
-        print("\nYou can download the missing files using these commands:")
-        for filepath, download_url in missing_files:
-            print(f"  wget {download_url}")
-        print(f"\nPlace the downloaded files in the same directory where you run the `kokoro-tts` command.")
-        print(f"Or specify custom paths using --model and --voices options.")
+        for p in missing:
+            print(f"  • {p}")
+        print("\nDownload them with:")
+        print("  kokoro-tts download")
+        print("\nOr specify custom paths using --model and --voices options.")
         sys.exit(1)
 
 def spinning_wheel(message="Processing...", progress=None):
@@ -151,6 +206,7 @@ def print_usage():
 Usage: kokoro-tts <input_text_file> [<output_audio_file>] [options]
 
 Commands:
+    download           Download model files to the XDG data directory
     -h, --help         Show this help message
     -v, --version      Show the version number
     --help-languages   List all supported languages
@@ -165,8 +221,8 @@ Options:
     --split-output <dir> Save each chunk as separate file in directory
     --format <str>      Audio format: wav or mp3 (default: wav)
     --debug             Show detailed debug information
-    --model <path>      Path to kokoro-v1.0.onnx model file (default: ./kokoro-v1.0.onnx)
-    --voices <path>     Path to voices-v1.0.bin file (default: ./voices-v1.0.bin)
+    --model <path>      Path to kokoro-v1.0.onnx (default: $XDG_DATA_HOME/kokoro-tts/kokoro-v1.0.onnx)
+    --voices <path>     Path to voices-v1.0.bin  (default: $XDG_DATA_HOME/kokoro-tts/voices-v1.0.bin)
 
 Input formats:
     .txt               Text file input
@@ -174,6 +230,7 @@ Input formats:
     .pdf               PDF document input (extracts chapters from TOC or content)
 
 Examples:
+    kokoro-tts download
     kokoro-tts input.txt output.wav --speed 1.2 --lang en-us --voice af_sarah
     kokoro-tts input.epub --split-output ./chunks/ --format mp3
     kokoro-tts input.pdf output.wav --speed 1.2 --lang en-us --voice af_sarah
@@ -189,8 +246,10 @@ Examples:
     kokoro-tts input.txt --model ./models/kokoro-v1.0.onnx --voices ./models/voices-v1.0.bin
     """)
 
-def print_supported_languages(model_path="kokoro-v1.0.onnx", voices_path="voices-v1.0.bin"):
+def print_supported_languages(model_path=None, voices_path=None):
     """Print all supported languages from Kokoro."""
+    model_path = model_path or default_model_path()
+    voices_path = voices_path or default_voices_path()
     check_required_files(model_path, voices_path)
     try:
         kokoro = Kokoro(model_path, voices_path)
@@ -203,8 +262,10 @@ def print_supported_languages(model_path="kokoro-v1.0.onnx", voices_path="voices
         print(f"Error loading model to get supported languages: {e}")
         sys.exit(1)
 
-def print_supported_voices(model_path="kokoro-v1.0.onnx", voices_path="voices-v1.0.bin"):
+def print_supported_voices(model_path=None, voices_path=None):
     """Print all supported voices from Kokoro."""
+    model_path = model_path or default_model_path()
+    voices_path = voices_path or default_voices_path()
     check_required_files(model_path, voices_path)
     try:
         kokoro = Kokoro(model_path, voices_path)
@@ -809,15 +870,18 @@ def process_chunk_sequential(chunk: str, kokoro: Kokoro, voice: str, speed: floa
         
         return None, None
 
-def convert_text_to_audio(input_file, output_file=None, voice=None, speed=1.0, lang="en-us", 
+def convert_text_to_audio(input_file, output_file=None, voice=None, speed=1.0, lang="en-us",
                          stream=False, split_output=None, format="wav", debug=False, stdin_indicators=None,
-                         model_path="kokoro-v1.0.onnx", voices_path="voices-v1.0.bin"):
+                         model_path=None, voices_path=None):
     global stop_spinner
-    
+
+    model_path = model_path or default_model_path()
+    voices_path = voices_path or default_voices_path()
+
     # Define stdin indicators if not provided
     if stdin_indicators is None:
         stdin_indicators = ['/dev/stdin', '-', 'CONIN$']  # CONIN$ is Windows stdin
-    
+
     # Check for required files first
     check_required_files(model_path, voices_path)
     
@@ -1253,7 +1317,12 @@ def main():
     """Main entry point for the kokoro-tts CLI tool."""
     # Define stdin indicators once (cross-platform)
     stdin_indicators = ['/dev/stdin', '-', 'CONIN$']  # CONIN$ is Windows stdin
-    
+
+    # Handle the `download` subcommand before any other parsing.
+    if len(sys.argv) > 1 and sys.argv[1] == 'download':
+        download_models()
+        sys.exit(0)
+
     # Validate command line arguments
     valid_options = get_valid_options()
     
@@ -1294,8 +1363,8 @@ def main():
         sys.exit(0)
     elif '--help-languages' in sys.argv:
         # For help commands, we need to parse model/voices paths first
-        model_path = "kokoro-v1.0.onnx"  # default model path
-        voices_path = "voices-v1.0.bin"  # default voices path
+        model_path = default_model_path()
+        voices_path = default_voices_path()
         
         # Parse model/voices paths for help commands
         for i, arg in enumerate(sys.argv):
@@ -1308,8 +1377,8 @@ def main():
         sys.exit(0)
     elif '--help-voices' in sys.argv:
         # For help commands, we need to parse model/voices paths first
-        model_path = "kokoro-v1.0.onnx"  # default model path
-        voices_path = "voices-v1.0.bin"  # default voices path
+        model_path = default_model_path()
+        voices_path = default_voices_path()
         
         # Parse model/voices paths for help commands
         for i, arg in enumerate(sys.argv):
@@ -1336,8 +1405,8 @@ def main():
     split_output = None
     format = "wav"  # default format
     merge_chunks = '--merge-chunks' in sys.argv
-    model_path = "kokoro-v1.0.onnx"  # default model path
-    voices_path = "voices-v1.0.bin"  # default voices path
+    model_path = default_model_path()
+    voices_path = default_voices_path()
     
     # Parse optional arguments
     for i, arg in enumerate(sys.argv):
